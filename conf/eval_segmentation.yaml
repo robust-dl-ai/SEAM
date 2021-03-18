@@ -1,0 +1,8 @@
+list: ${hydra:runtime.cwd}/psa/voc12/val.txt
+predict_dir: ${hydra:runtime.cwd}/data/psa/results/val/rw
+gt_dir: ${hydra:runtime.cwd}/data/raw/VOCdevkit/VOC2012/SegmentationClass
+logfile: ./evallog.txt
+comment: example comment
+type: png
+t: 0.6
+curve: True

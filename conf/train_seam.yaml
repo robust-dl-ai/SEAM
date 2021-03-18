@@ -1,0 +1,13 @@
+lr: 0.1
+batch_size: 2
+max_epoches: 1
+crop_size: 448
+network: seam.network.resnet38_SEAM
+voc12_root: ${hydra:runtime.cwd}/data/raw/VOCdevkit/VOC2012
+weights: ${hydra:runtime.cwd}/models/seam/resnet38_seam_original.pth
+wt_dec: 5e-4
+session_name: resnet38_cls
+train_list: ${hydra:runtime.cwd}/seam/voc12/dev.txt
+val_list: ${hydra:runtime.cwd}/seam/voc12/dev.txt
+cls_label_path: ${hydra:runtime.cwd}/seam/voc12/cls_labels.npy
+num_workers: 0

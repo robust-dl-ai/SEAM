@@ -1,12 +1,13 @@
 import torch
 import torch.nn as nn
-import torch.sparse as sparse
 import torch.nn.functional as F
+import torch.sparse as sparse
 
-import network.resnet38d
-from tool import pyutils
+from seam.network import resnet38d
+from seam.tool import pyutils
 
-class Net(network.resnet38d.Net):
+
+class Net(resnet38d.Net):
     def __init__(self):
         super(Net, self).__init__()
 
@@ -15,7 +16,7 @@ class Net(network.resnet38d.Net):
         self.f8_5 = torch.nn.Conv2d(4096, 256, 1, bias=False)
 
         self.f9 = torch.nn.Conv2d(448, 448, 1, bias=False)
-        
+
         torch.nn.init.kaiming_normal_(self.f8_3.weight)
         torch.nn.init.kaiming_normal_(self.f8_4.weight)
         torch.nn.init.kaiming_normal_(self.f8_5.weight)
@@ -25,10 +26,12 @@ class Net(network.resnet38d.Net):
 
         self.from_scratch_layers = [self.f8_3, self.f8_4, self.f8_5, self.f9]
 
-        self.predefined_featuresize = int(448//8)
+        self.predefined_featuresize = int(448 // 8)
         self.radius = 5
-        self.ind_from, self.ind_to = pyutils.get_indices_of_pairs(radius=self.radius, size=(self.predefined_featuresize, self.predefined_featuresize))
-        self.ind_from = torch.from_numpy(self.ind_from); self.ind_to = torch.from_numpy(self.ind_to)
+        self.ind_from, self.ind_to = pyutils.get_indices_of_pairs(radius=self.radius, size=(
+            self.predefined_featuresize, self.predefined_featuresize))
+        self.ind_from = torch.from_numpy(self.ind_from);
+        self.ind_to = torch.from_numpy(self.ind_to)
         return
 
     def forward(self, x, to_dense=False):
@@ -45,9 +48,10 @@ class Net(network.resnet38d.Net):
             ind_to = self.ind_to
         else:
             min_edge = min(x.size(2), x.size(3))
-            radius = (min_edge-1)//2 if min_edge < self.radius*2+1 else self.radius
+            radius = (min_edge - 1) // 2 if min_edge < self.radius * 2 + 1 else self.radius
             ind_from, ind_to = pyutils.get_indices_of_pairs(radius, (x.size(2), x.size(3)))
-            ind_from = torch.from_numpy(ind_from); ind_to = torch.from_numpy(ind_to)
+            ind_from = torch.from_numpy(ind_from);
+            ind_to = torch.from_numpy(ind_to)
 
         x = x.view(x.size(0), x.size(1), -1).contiguous()
         ind_from = ind_from.contiguous()
@@ -59,7 +63,7 @@ class Net(network.resnet38d.Net):
         ff = torch.unsqueeze(ff, dim=2)
         ft = ft.view(ft.size(0), ft.size(1), -1, ff.size(3))
 
-        aff = torch.exp(-torch.mean(torch.abs(ft-ff), dim=1))
+        aff = torch.exp(-torch.mean(torch.abs(ft - ff), dim=1))
 
         if to_dense:
             aff = aff.view(-1).cpu()
@@ -72,13 +76,12 @@ class Net(network.resnet38d.Net):
             indices_id = torch.stack([torch.arange(0, area).long(), torch.arange(0, area).long()])
 
             aff_mat = sparse.FloatTensor(torch.cat([indices, indices_id, indices_tp], dim=1),
-                                      torch.cat([aff, torch.ones([area]), aff])).to_dense().cuda()
+                                         torch.cat([aff, torch.ones([area]), aff])).to_dense().cuda()
 
             return aff_mat
 
         else:
             return aff
-
 
     def get_parameter_groups(self):
         groups = ([], [], [], [])
@@ -101,6 +104,3 @@ class Net(network.resnet38d.Net):
                         groups[1].append(m.bias)
 
         return groups
-
-
-

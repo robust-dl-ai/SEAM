@@ -1,15 +1,17 @@
-import argparse
 import importlib
 
 import cv2
+import hydra
 import numpy as np
 import torch
 import torch.nn.functional as F
-from tensorboardX import SummaryWriter
+from omegaconf import DictConfig
 from torch.utils.data import DataLoader
 from torchvision import transforms
 
-from seam.tool import pyutils, imutils, torchutils, visualization
+from seam.tool import imutils
+from seam.tool import pyutils, torchutils
+from seam.tool import visualization
 from seam.voc12 import data
 
 
@@ -31,35 +33,14 @@ def max_onehot(x):
     return x
 
 
-if __name__ == '__main__':
-
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--batch_size", default=8, type=int)
-    parser.add_argument("--max_epoches", default=8, type=int)
-    parser.add_argument("--network", default="seam.network.resnet38_SEAM", type=str)
-    parser.add_argument("--lr", default=0.01, type=float)
-    parser.add_argument("--num_workers", default=64, type=int)
-    parser.add_argument("--wt_dec", default=5e-4, type=float)
-    parser.add_argument("--train_list", default="seam/voc12/train_aug.txt", type=str)
-    parser.add_argument("--val_list", default="seam/voc12/val.txt", type=str)
-    parser.add_argument("--session_name", default="resnet38_SEAM", type=str)
-    parser.add_argument("--crop_size", default=448, type=int)
-    parser.add_argument("--weights", required=True, type=str)
-    parser.add_argument("--voc12_root", default='VOC2012', type=str)
-    parser.add_argument("--tblog_dir", default='./tblog', type=str)
-    args = parser.parse_args()
-
-    pyutils.Logger(args.session_name + '.log')
-
-    print(vars(args))
-
-    model = getattr(importlib.import_module(args.network), 'Net')()
+@hydra.main(config_path='../conf', config_name="train_seam")
+def run_app(cfg: DictConfig) -> None:
+    model = getattr(importlib.import_module(cfg.network), 'Net')()
 
     print(model)
 
-    tblogger = SummaryWriter(args.tblog_dir)
-
-    train_dataset = data.VOC12ClsDataset(args.train_list, voc12_root=args.voc12_root,
+    train_dataset = data.VOC12ClsDataset(cfg.train_list, voc12_root=cfg.voc12_root,
+                                         cls_label_path=cfg.cls_label_path,
                                          transform=transforms.Compose([
                                              imutils.RandomResizeLong(448, 768),
                                              transforms.RandomHorizontalFlip(),
@@ -67,45 +48,42 @@ if __name__ == '__main__':
                                                                     hue=0.1),
                                              np.asarray,
                                              model.normalize,
-                                             imutils.RandomCrop(args.crop_size),
+                                             imutils.RandomCrop(cfg.crop_size),
                                              imutils.HWC_to_CHW,
                                              torch.from_numpy
                                          ]))
 
-
     def worker_init_fn(worker_id):
         np.random.seed(1 + worker_id)
 
-
-    train_data_loader = DataLoader(train_dataset, batch_size=args.batch_size,
-                                   shuffle=True, num_workers=args.num_workers, pin_memory=True, drop_last=True,
+    train_data_loader = DataLoader(train_dataset, batch_size=cfg.batch_size,
+                                   shuffle=True, num_workers=cfg.num_workers, pin_memory=True, drop_last=True,
                                    worker_init_fn=worker_init_fn)
-    max_step = len(train_dataset) // args.batch_size * args.max_epoches
+    max_step = len(train_dataset) // cfg.batch_size * cfg.max_epoches
 
     param_groups = model.get_parameter_groups()
     optimizer = torchutils.PolyOptimizer([
-        {'params': param_groups[0], 'lr': args.lr, 'weight_decay': args.wt_dec},
-        {'params': param_groups[1], 'lr': 2 * args.lr, 'weight_decay': 0},
-        {'params': param_groups[2], 'lr': 10 * args.lr, 'weight_decay': args.wt_dec},
-        {'params': param_groups[3], 'lr': 20 * args.lr, 'weight_decay': 0}
-    ], lr=args.lr, weight_decay=args.wt_dec, max_step=max_step)
+        {'params': param_groups[0], 'lr': cfg.lr, 'weight_decay': cfg.wt_dec},
+        {'params': param_groups[1], 'lr': 2 * cfg.lr, 'weight_decay': 0},
+        {'params': param_groups[2], 'lr': 10 * cfg.lr, 'weight_decay': cfg.wt_dec},
+        {'params': param_groups[3], 'lr': 20 * cfg.lr, 'weight_decay': 0}
+    ], lr=cfg.lr, weight_decay=cfg.wt_dec, max_step=max_step)
 
-    if args.weights[-7:] == '.params':
+    if cfg.weights[-7:] == '.params':
         import network.resnet38d
 
-        assert 'resnet38' in args.network
-        weights_dict = network.resnet38d.convert_mxnet_to_torch(args.weights)
+        assert 'resnet38' in cfg.network
+        weights_dict = network.resnet38d.convert_mxnet_to_torch(cfg.weights)
     else:
-        weights_dict = torch.load(args.weights)
+        weights_dict = torch.load(cfg.weights, map_location=torch.device('cpu'))
 
     model.load_state_dict(weights_dict, strict=False)
-    model = torch.nn.DataParallel(model).cuda()
     model.train()
 
     avg_meter = pyutils.AverageMeter('loss', 'loss_cls', 'loss_er', 'loss_ecr')
 
     timer = pyutils.Timer("Session started: ")
-    for ep in range(args.max_epoches):
+    for ep in range(cfg.max_epoches):
 
         for iter, pack in enumerate(train_data_loader):
 
@@ -116,7 +94,7 @@ if __name__ == '__main__':
             label = pack[2]
             bg_score = torch.ones((N, 1))
             label = torch.cat((bg_score, label), dim=1)
-            label = label.cuda(non_blocking=True).unsqueeze(2).unsqueeze(3)
+            label = label.unsqueeze(2).unsqueeze(3)
 
             cam1, cam_rv1 = model(img1)
             label1 = F.adaptive_avg_pool2d(cam1, (1, 1))
@@ -137,8 +115,11 @@ if __name__ == '__main__':
 
             ns, cs, hs, ws = cam2.size()
             loss_er = torch.mean(torch.abs(cam1[:, 1:, :, :] - cam2[:, 1:, :, :]))
+            # loss_er = torch.mean(torch.pow(cam1[:,1:,:,:]-cam2[:,1:,:,:], 2))
             cam1[:, 0, :, :] = 1 - torch.max(cam1[:, 1:, :, :], dim=1)[0]
             cam2[:, 0, :, :] = 1 - torch.max(cam2[:, 1:, :, :], dim=1)[0]
+            #            with torch.no_grad():
+            #                eq_mask = (torch.max(torch.abs(cam1-cam2),dim=1,keepdim=True)[0]<0.7).float()
             tensor_ecr1 = torch.abs(max_onehot(cam2.detach()) - cam_rv1)  # *eq_mask
             tensor_ecr2 = torch.abs(max_onehot(cam1.detach()) - cam_rv2)  # *eq_mask
             loss_ecr1 = torch.mean(torch.topk(tensor_ecr1.view(ns, -1), k=(int)(21 * hs * ws * 0.2), dim=-1)[0])
@@ -160,7 +141,7 @@ if __name__ == '__main__':
 
                 print('Iter:%5d/%5d' % (optimizer.global_step - 1, max_step),
                       'loss:%.4f %.4f %.4f %.4f' % avg_meter.get('loss', 'loss_cls', 'loss_er', 'loss_ecr'),
-                      'imps:%.1f' % ((iter + 1) * args.batch_size / timer.get_stage_elapsed()),
+                      'imps:%.1f' % ((iter + 1) * cfg.batch_size / timer.get_stage_elapsed()),
                       'Fin:%s' % (timer.str_est_finish()),
                       'lr: %.4f' % (optimizer.param_groups[0]['lr']), flush=True)
 
@@ -205,21 +186,13 @@ if __name__ == '__main__':
                              'loss_er': loss_er.item(),
                              'loss_ecr': loss_ecr.item()}
                 itr = optimizer.global_step - 1
-                tblogger.add_scalars('loss', loss_dict, itr)
-                tblogger.add_scalar('lr', optimizer.param_groups[0]['lr'], itr)
-                tblogger.add_image('Image', input_img, itr)
-                # tblogger.add_image('Mask', MASK, itr)
-                tblogger.add_image('CLS1', CLS1, itr)
-                tblogger.add_image('CLS2', CLS2, itr)
-                tblogger.add_image('CLS_RV1', CLS_RV1, itr)
-                tblogger.add_image('CLS_RV2', CLS_RV2, itr)
-                tblogger.add_images('CAM1', CAM1, itr)
-                tblogger.add_images('CAM2', CAM2, itr)
-                tblogger.add_images('CAM_RV1', CAM_RV1, itr)
-                tblogger.add_images('CAM_RV2', CAM_RV2, itr)
-
+                print(loss_dict)
         else:
             print('')
             timer.reset_stage()
 
-    torch.save(model.module.state_dict(), args.session_name + '.pth')
+    torch.save(model.state_dict(), cfg.session_name + '.pth')
+
+
+if __name__ == "__main__":
+    run_app()
